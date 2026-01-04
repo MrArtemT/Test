@@ -68,7 +68,7 @@ def parse_args() -> Options:
     parser.add_argument(
         "--min-contrast",
         type=float,
-        default=12.0,
+        default=18.0,
         help=(
             "Минимальная разница RGB (0–441) между фоном и текстом в ячейке."
             " Если меньше — ячейка заливается одним цветом, чтобы убрать шум."
@@ -77,7 +77,7 @@ def parse_args() -> Options:
     parser.add_argument(
         "--min-dots",
         type=int,
-        default=2,
+        default=3,
         help=(
             "Если точек меньше значения — ячейка очищается, чтобы убирать одиночные"
             " «вопросики»"
@@ -86,16 +86,22 @@ def parse_args() -> Options:
     parser.add_argument(
         "--min-neighbors",
         type=int,
-        default=2,
+        default=3,
         help=(
             "Сколько соседних ячеек с точками нужно, чтобы не считать её шумом."
             " Одиночные пятна автоматически глушатся."
         ),
     )
-    parser.add_argument(
+    dither_group = parser.add_mutually_exclusive_group()
+    dither_group.add_argument(
+        "--dither",
+        action="store_true",
+        help="Включить упорядоченное дизеринг внутри ячейки",
+    )
+    dither_group.add_argument(
         "--no-dither",
         action="store_true",
-        help="Отключить упорядоченное дизеринг внутри ячейки",
+        help="Явно отключить дизеринг (по умолчанию уже выключен)",
     )
     args = parser.parse_args()
 
@@ -104,7 +110,7 @@ def parse_args() -> Options:
         output_path=args.output,
         char_width=args.chars_width,
         char_height=args.chars_height,
-        dither=not args.no_dither,
+        dither=args.dither and not args.no_dither,
         min_contrast=max(0.0, args.min_contrast),
         min_dots=max(0, args.min_dots),
         min_neighbors=max(0, args.min_neighbors),
