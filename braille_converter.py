@@ -263,6 +263,7 @@ class BrailleFrame:
     chars: List[str]
     fg_rows: List[List[int]]
     bg_rows: List[List[int]]
+    col_rows: List[List[int]]  # совместимо с makepic.lua (один цвет на ячейку)
 
 
 def to_braille_grid(
@@ -305,12 +306,15 @@ def to_braille_grid(
 
     # Второй проход: убираем одиночные ячейки, если вокруг слишком мало «чернил».
     cleaned_bits: List[List[int]] = []
+    primary_rows: List[List[int]] = []  # цвет для makepic.lua
     for y in range(char_h):
         cleaned_line: List[int] = []
+        primary_line: List[int] = []
         for x in range(char_w):
             bits = bit_rows[y][x]
             if bits == 0:
                 cleaned_line.append(0)
+                primary_line.append(bg_rows[y][x])
                 continue
 
             neighbor_dots = 0
@@ -323,9 +327,12 @@ def to_braille_grid(
             if neighbor_dots < min_neighbors:
                 cleaned_line.append(0)
                 fg_rows[y][x] = bg_rows[y][x]  # превращаем в заливку
+                primary_line.append(bg_rows[y][x])
             else:
                 cleaned_line.append(bits)
+                primary_line.append(fg_rows[y][x])
         cleaned_bits.append(cleaned_line)
+        primary_rows.append(primary_line)
 
     # Переводим в строки символов.
     chars: List[str] = []
@@ -336,7 +343,9 @@ def to_braille_grid(
             line_chars.append(chr(0x2800 + bits))
         chars.append("".join(line_chars))
 
-    return BrailleFrame(chars=chars, fg_rows=fg_rows, bg_rows=bg_rows)
+    return BrailleFrame(
+        chars=chars, fg_rows=fg_rows, bg_rows=bg_rows, col_rows=primary_rows
+    )
 
 
 def frame_to_lua(frame: BrailleFrame) -> str:
@@ -363,6 +372,9 @@ def frame_to_lua(frame: BrailleFrame) -> str:
         "  chars = {",
         f"  {chars_lines}",
         "  },",
+        # Совместимость с makepic.lua — одно поле col с одним цветом на ячейку.
+        # Цвет берётся тот, что реально рисуется (фон, если нет точек, иначе текст).
+        "  col = " + lua_table(frame.col_rows) + ",",
         "  fg = " + lua_table(frame.fg_rows) + ",",
         "  bg = " + lua_table(frame.bg_rows),
         "}",
