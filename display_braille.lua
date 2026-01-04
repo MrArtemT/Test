@@ -3,6 +3,7 @@
 
 local component = require("component")
 local term = require("term")
+local unicode = require("unicode")
 
 local args = {...}
 local path = args[1] or "/home/braille.lua"
@@ -40,7 +41,7 @@ local function draw_image()
       local src_x = math.floor((x - 1) / scale) + 1
       gpu.setBackground(bg_row[src_x])
       gpu.setForeground(fg_row[src_x])
-      gpu.set(x0 + x, y0 + y, line:sub(src_x, src_x))
+      gpu.set(x0 + x, y0 + y, unicode.sub(line, src_x, src_x))
     end
   end
 end
