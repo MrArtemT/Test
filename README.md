@@ -40,6 +40,7 @@ This repo contains:
 
 - Letterboxing: the converter centers your image in the target grid without distortion, filling empty space with black.
 - Color: each Braille cell uses up to two colors (foreground/background). Ordered dithering is enabled by default for better detail.
+- Noise cleanup: cells whose clustered colors are almost identical (or that contain fewer than 2 dots of ink) are flattened to the background to remove stray `?` artifacts. Adjust with `--min-contrast` and `--min-dots` if you want more/less cleanup.
 - The generated Lua file now uses decimal color values to avoid syntax issues on some OpenOS builds and writes UTF-8 Braille
   characters directly (no JSON-style escapes), so `dofile` can load it without errors.
 - If you want to batch multiple images, just run the converter for each source image and give each output a unique filename.

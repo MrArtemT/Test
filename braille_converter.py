@@ -17,6 +17,7 @@ import argparse
 import json
 import pathlib
 from dataclasses import dataclass
+import math
 from typing import Iterable, List, Sequence, Tuple
 
 from PIL import Image
@@ -37,6 +38,8 @@ class Options:
     char_width: int
     char_height: int
     dither: bool
+    min_contrast: float
+    min_dots: int
 
 
 Color = Tuple[float, float, float]
@@ -63,6 +66,24 @@ def parse_args() -> Options:
         help="Target character height (default: 50 -> 200px when using Braille)",
     )
     parser.add_argument(
+        "--min-contrast",
+        type=float,
+        default=12.0,
+        help=(
+            "Minimum RGB distance (0-441) between foreground and background inside a"
+            " cell; lower values are treated as flat color to avoid speckled noise"
+        ),
+    )
+    parser.add_argument(
+        "--min-dots",
+        type=int,
+        default=2,
+        help=(
+            "Clamp cells with fewer than this many Braille dots to blank to suppress"
+            " isolated question-mark artifacts"
+        ),
+    )
+    parser.add_argument(
         "--no-dither",
         action="store_true",
         help="Disable ordered dithering inside each Braille cell",
@@ -75,6 +96,8 @@ def parse_args() -> Options:
         char_width=args.chars_width,
         char_height=args.chars_height,
         dither=not args.no_dither,
+        min_contrast=max(0.0, args.min_contrast),
+        min_dots=max(0, args.min_dots),
     )
 
 
@@ -185,15 +208,29 @@ def _color_to_hex(c: Color) -> int:
     return (int(round(c[0])) << 16) | (int(round(c[1])) << 8) | int(round(c[2]))
 
 
-def _block_to_braille(block: Sequence[Sequence[Color]], dither: bool) -> Tuple[str, int, int]:
+def _block_to_braille(
+    block: Sequence[Sequence[Color]], dither: bool, min_contrast: float, min_dots: int
+) -> Tuple[str, int, int]:
     flat: List[Color] = [pix for row in block for pix in row]
     bg, fg = _kmeans_two(flat)
+
+    # Suppress speckled/question-mark noise when the two clustered colors are almost
+    # identical. Treat the whole cell as a flat background in that case.
+    if math.sqrt(_dist2(bg, fg)) < min_contrast:
+        flat_color = _color_to_hex(_avg_color(flat))
+        return chr(0x2800), flat_color, flat_color
 
     bits = 0
     for y, row in enumerate(block):
         for x, pix in enumerate(row):
             if _choose_pixel(pix, bg, fg, x, y, dither):
                 bits |= 1 << _BRAILLE_BIT_INDEX[y][x]
+
+    # Remove tiny 1-pixel noise that shows up as scattered question marks by turning
+    # low-dot cells into blanks.
+    if bits != 0 and bin(bits).count("1") < min_dots:
+        flat_color = _color_to_hex(_avg_color(flat))
+        return chr(0x2800), flat_color, flat_color
 
     char = chr(0x2800 + bits)
     return char, _color_to_hex(fg), _color_to_hex(bg)
@@ -214,7 +251,9 @@ class BrailleFrame:
     bg_rows: List[List[int]]
 
 
-def to_braille_grid(img: Image.Image, char_w: int, char_h: int, dither: bool) -> BrailleFrame:
+def to_braille_grid(
+    img: Image.Image, char_w: int, char_h: int, dither: bool, min_contrast: float, min_dots: int
+) -> BrailleFrame:
     assert img.width == char_w * 2 and img.height == char_h * 4
     pixels = img.load()
 
@@ -234,7 +273,7 @@ def to_braille_grid(img: Image.Image, char_w: int, char_h: int, dither: bool) ->
                     r, g, b, a = pixels[cx * 2 + px, cy * 4 + py]
                     row.append(_composite_on_black((r, g, b, a)))
                 block.append(row)
-            char, fg, bg = _block_to_braille(block, dither)
+            char, fg, bg = _block_to_braille(block, dither, min_contrast, min_dots)
             char_line.append(char)
             fg_line.append(fg)
             bg_line.append(bg)
@@ -285,7 +324,14 @@ def main() -> None:
     target_px_w = opts.char_width * 2
     target_px_h = opts.char_height * 4
     prepared = resize_and_letterbox(img, target_px_w, target_px_h)
-    frame = to_braille_grid(prepared, opts.char_width, opts.char_height, opts.dither)
+    frame = to_braille_grid(
+        prepared,
+        opts.char_width,
+        opts.char_height,
+        opts.dither,
+        opts.min_contrast,
+        opts.min_dots,
+    )
     opts.output_path.write_text(frame_to_lua(frame), encoding="utf-8")
     print(f"Saved Braille Lua to {opts.output_path} (chars: {opts.char_width}x{opts.char_height})")
 
