@@ -315,3 +315,5 @@ if args.oc_pic:
 else:
     for line in lines:
         print(line)
+
+#use python script.py "C:\Users\vreme\Downloads\imput_2.png" -w 320 -d -a --oc-pic /home/background.pic --lua-out makepic.lua
