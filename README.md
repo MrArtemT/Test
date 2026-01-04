@@ -1,46 +1,46 @@
-# Braille image converter for OpenOS
+# Конвертер изображений в Брайль для OpenOS
 
-This repo contains:
+В репо лежат:
 
-- `braille_converter.py` — Python CLI that resizes an image to a Braille grid, clusters two colors per 2x4 cell, optionally dithers, and writes a Lua table (`w`, `h`, `chars`, `fg`, `bg`).
-- `display_braille.lua` — OpenOS viewer that reads the Lua table and draws it centered on the screen with the GPU.
+- `braille_converter.py` — Python-CLI: масштабирует картинку под сетку Брайля, подбирает 2 цвета на ячейку, по желанию дизерит и сохраняет Lua-таблицу (`w`, `h`, `chars`, `fg`, `bg`).
+- `display_braille.lua` — просмотрщик для OpenOS: читает таблицу, центрирует и выводит на экран через GPU.
 
-## Requirements
+## Требования
 
-- Python 3.9+ with [Pillow](https://pillow.readthedocs.io/) installed (`pip install pillow`).
-- Your source image (e.g., `imput_2.png`).
+- Python 3.9+ и установленный [Pillow](https://pillow.readthedocs.io/) (`pip install pillow`).
+- Исходное изображение (например, `imput_2.png`).
 
-## Convert an image (example with `imput_2.png`)
+## Как конвертировать (пример с `imput_2.png`)
 
-1. Install Pillow once:
+1. Один раз поставить Pillow:
    ```bash
    python -m pip install pillow
    ```
 
-2. Run the converter. For a standard 80x25 OpenOS resolution, use:
+2. Запустить конвертер. Для стандартного экрана OpenOS 80x25:
    ```bash
    python braille_converter.py "C:\\Users\\vreme\\Downloads\\imput_2.png" output_braille.lua --chars-width 80 --chars-height 25
    ```
 
-   Notes:
-   - Quote Windows paths and escape backslashes as shown above.
-   - If your in-game screen is larger, replace `--chars-width/--chars-height` with the resolution you actually use (e.g., `160 50` for tier-3 at 160x50).
-   - To disable dithering, add `--no-dither`.
+   Примечания:
+   - Пути в Windows нужно брать в кавычки и экранировать обратные слэши, как в примере.
+   - Если экран в игре больше — подставьте свою ширину/высоту символов (например, `160 50` для т3 монитора 160x50).
+   - Добавьте `--no-dither`, если хотите полностью выключить дизеринг.
+   - Параметры очистки шума: `--min-contrast` (сколько должны отличаться фон/текст, иначе ячейка заливается одним цветом), `--min-dots` (минимум точек в ячейке), `--min-neighbors` (сколько соседних ячеек с точками нужно, чтобы считать пятно не шумом).
 
-3. Copy the generated `output_braille.lua` to your OpenOS computer along with `display_braille.lua`.
+3. Скопируйте `output_braille.lua` и `display_braille.lua` на компьютер OpenOS.
 
-4. On OpenOS, display the image:
+4. В OpenOS показать изображение:
    ```lua
    lua display_braille.lua /home/output_braille.lua
    ```
 
-   The viewer will clear the terminal, center the art, and scale down if the screen is smaller than the precomputed size.
+   Скрипт очистит терминал, отцентрирует картинку и уменьшит её, если экран меньше подготовленного размера.
 
-## Tips
+## Советы
 
-- Letterboxing: the converter centers your image in the target grid without distortion, filling empty space with black.
-- Color: each Braille cell uses up to two colors (foreground/background). Ordered dithering is enabled by default for better detail.
-- Noise cleanup: cells whose clustered colors are almost identical (or that contain fewer than 2 dots of ink) are flattened to the background to remove stray `?` artifacts. Adjust with `--min-contrast` and `--min-dots` if you want more/less cleanup.
-- The generated Lua file now uses decimal color values to avoid syntax issues on some OpenOS builds and writes UTF-8 Braille
-  characters directly (no JSON-style escapes), so `dofile` can load it without errors.
-- If you want to batch multiple images, just run the converter for each source image and give each output a unique filename.
+- Леттербокс: изображение центрируется без искажений, пустое место заливается чёрным.
+- Цвет: в ячейке максимум два цвета (фон/текст). Упорядоченный дизеринг включён по умолчанию для лучшей детализации.
+- Чистка «вопросиков»: если фон и текст почти одинаковые или в ячейке слишком мало точек/соседей, она превращается в однотонную заливку. Настраивается `--min-contrast`, `--min-dots`, `--min-neighbors`.
+- Lua-файл сохраняет цвета десятичными числами и символы Брайля в UTF-8, поэтому `dofile` работает даже на старых сборках OpenOS.
+- Для пачки файлов запускайте конвертер для каждого изображения, указывая свой выходной путь.

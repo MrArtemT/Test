@@ -1,5 +1,5 @@
 -- display_braille.lua
--- Draw a Braille image table (produced by braille_converter.py) centered on the screen.
+-- Показывает таблицу символов Брайля (из braille_converter.py), центрируя под экран.
 
 local component = require("component")
 local term = require("term")
@@ -10,7 +10,7 @@ local path = args[1] or "/home/braille.lua"
 local gpu = component.gpu
 local ok, img_or_err = pcall(dofile, path)
 if not ok then
-  io.stderr:write("Failed to load Braille file: " .. tostring(img_or_err) .. "\n")
+  io.stderr:write("Не удалось загрузить файл Брайля: " .. tostring(img_or_err) .. "\n")
   os.exit(1)
 end
 local img = img_or_err

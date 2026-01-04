@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-Braille image converter for OpenComputers / OpenOS.
+Преобразователь изображений в символы Брайля для OpenComputers / OpenOS.
 
-- Resizes an image so that a 2x4 Braille grid matches the target character
-  resolution (default: 160x50 -> 320x200 pixels).
-- Performs simple 2-color clustering inside every 2x4 block to pick a
-  foreground/background pair.
-- Uses ordered dithering to decide which pixels belong to the foreground,
-  improving detail when colors are close.
-- Emits a Lua table with character, foreground, and background arrays that can
-  be drawn directly on the GPU.
+- Масштабирует картинку под сетку 2x4 точек Брайля с нужным количеством
+  символов (по умолчанию 160x50 → 320x200 пикселей).
+- Внутри каждой ячейки подбирает 2 цвета (фон/текст) и по желанию
+  применяет упорядоченное дизеринг.
+- Выдаёт Lua-таблицу с шириной/высотой и массивами символов/цветов, которые
+  можно сразу рисовать на GPU.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 from dataclasses import dataclass
 import math
@@ -22,7 +19,7 @@ from typing import Iterable, List, Sequence, Tuple
 
 from PIL import Image
 
-# 4x4 Bayer matrix for ordered dithering.
+# 4x4 матрица Байера для упорядоченного дизеринга.
 _BAYER_4X4 = [
     [0, 8, 2, 10],
     [12, 4, 14, 6],
@@ -40,38 +37,41 @@ class Options:
     dither: bool
     min_contrast: float
     min_dots: int
+    min_neighbors: int
 
 
 Color = Tuple[float, float, float]
 
 
 def parse_args() -> Options:
-    parser = argparse.ArgumentParser(description="Convert images to Braille art for OpenOS.")
-    parser.add_argument("input", type=pathlib.Path, help="Input image path")
+    parser = argparse.ArgumentParser(
+        description="Конвертировать изображение в символы Брайля для OpenOS."
+    )
+    parser.add_argument("input", type=pathlib.Path, help="Путь к исходной картинке")
     parser.add_argument(
         "output",
         type=pathlib.Path,
-        help="Output Lua file path (will contain chars/bg/fg tables)",
+        help="Путь к Lua-файлу (w/h/chars/fg/bg)",
     )
     parser.add_argument(
         "--chars-width",
         type=int,
         default=160,
-        help="Target character width (default: 160 -> 320px when using Braille)",
+        help="Ширина в символах (по умолчанию 160 → 320 пикселей с Брайлем)",
     )
     parser.add_argument(
         "--chars-height",
         type=int,
         default=50,
-        help="Target character height (default: 50 -> 200px when using Braille)",
+        help="Высота в символах (по умолчанию 50 → 200 пикселей с Брайлем)",
     )
     parser.add_argument(
         "--min-contrast",
         type=float,
         default=12.0,
         help=(
-            "Minimum RGB distance (0-441) between foreground and background inside a"
-            " cell; lower values are treated as flat color to avoid speckled noise"
+            "Минимальная разница RGB (0–441) между фоном и текстом в ячейке."
+            " Если меньше — ячейка заливается одним цветом, чтобы убрать шум."
         ),
     )
     parser.add_argument(
@@ -79,14 +79,23 @@ def parse_args() -> Options:
         type=int,
         default=2,
         help=(
-            "Clamp cells with fewer than this many Braille dots to blank to suppress"
-            " isolated question-mark artifacts"
+            "Если точек меньше значения — ячейка очищается, чтобы убирать одиночные"
+            " «вопросики»"
+        ),
+    )
+    parser.add_argument(
+        "--min-neighbors",
+        type=int,
+        default=2,
+        help=(
+            "Сколько соседних ячеек с точками нужно, чтобы не считать её шумом."
+            " Одиночные пятна автоматически глушатся."
         ),
     )
     parser.add_argument(
         "--no-dither",
         action="store_true",
-        help="Disable ordered dithering inside each Braille cell",
+        help="Отключить упорядоченное дизеринг внутри ячейки",
     )
     args = parser.parse_args()
 
@@ -98,6 +107,7 @@ def parse_args() -> Options:
         dither=not args.no_dither,
         min_contrast=max(0.0, args.min_contrast),
         min_dots=max(0, args.min_dots),
+        min_neighbors=max(0, args.min_neighbors),
     )
 
 
@@ -148,6 +158,10 @@ def _avg_color(colors: Iterable[Color]) -> Color:
     return (r / count, g / count, b / count)
 
 
+def _dist2(a: Color, b: Color) -> float:
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+
+
 def _kmeans_two(colors: Sequence[Color]) -> Tuple[Color, Color]:
     if not colors:
         return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
@@ -180,12 +194,8 @@ def _kmeans_two(colors: Sequence[Color]) -> Tuple[Color, Color]:
     return center_a, center_b
 
 
-def _dist2(a: Color, b: Color) -> float:
-    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
-
-
 def _choose_pixel(color: Color, bg: Color, fg: Color, x: int, y: int, dither: bool) -> bool:
-    """Return True if pixel should belong to foreground."""
+    """Вернуть True, если пиксель должен уйти в цвет текста."""
     if bg == fg:
         return False
 
@@ -210,15 +220,14 @@ def _color_to_hex(c: Color) -> int:
 
 def _block_to_braille(
     block: Sequence[Sequence[Color]], dither: bool, min_contrast: float, min_dots: int
-) -> Tuple[str, int, int]:
+) -> Tuple[int, int, int, int]:
     flat: List[Color] = [pix for row in block for pix in row]
     bg, fg = _kmeans_two(flat)
 
-    # Suppress speckled/question-mark noise when the two clustered colors are almost
-    # identical. Treat the whole cell as a flat background in that case.
+    # Если цвета почти не отличаются — сразу считаем ячейку заливкой.
     if math.sqrt(_dist2(bg, fg)) < min_contrast:
         flat_color = _color_to_hex(_avg_color(flat))
-        return chr(0x2800), flat_color, flat_color
+        return 0, flat_color, flat_color, 0
 
     bits = 0
     for y, row in enumerate(block):
@@ -226,21 +235,20 @@ def _block_to_braille(
             if _choose_pixel(pix, bg, fg, x, y, dither):
                 bits |= 1 << _BRAILLE_BIT_INDEX[y][x]
 
-    # Remove tiny 1-pixel noise that shows up as scattered question marks by turning
-    # low-dot cells into blanks.
-    if bits != 0 and bin(bits).count("1") < min_dots:
+    # Убираем мелкие одиночные точки, которые превращаются в «вопросики».
+    dot_count = bin(bits).count("1")
+    if bits != 0 and dot_count < min_dots:
         flat_color = _color_to_hex(_avg_color(flat))
-        return chr(0x2800), flat_color, flat_color
+        return 0, flat_color, flat_color, 0
 
-    char = chr(0x2800 + bits)
-    return char, _color_to_hex(fg), _color_to_hex(bg)
+    return bits, _color_to_hex(fg), _color_to_hex(bg), dot_count
 
 
 _BRAILLE_BIT_INDEX = [
-    [0, 3],  # y=0: dots 1,4
-    [1, 4],  # y=1: dots 2,5
-    [2, 5],  # y=2: dots 3,6
-    [6, 7],  # y=3: dots 7,8
+    [0, 3],  # y=0: точки 1,4
+    [1, 4],  # y=1: точки 2,5
+    [2, 5],  # y=2: точки 3,6
+    [6, 7],  # y=3: точки 7,8
 ]
 
 
@@ -252,19 +260,27 @@ class BrailleFrame:
 
 
 def to_braille_grid(
-    img: Image.Image, char_w: int, char_h: int, dither: bool, min_contrast: float, min_dots: int
+    img: Image.Image,
+    char_w: int,
+    char_h: int,
+    dither: bool,
+    min_contrast: float,
+    min_dots: int,
+    min_neighbors: int,
 ) -> BrailleFrame:
     assert img.width == char_w * 2 and img.height == char_h * 4
     pixels = img.load()
 
-    chars: List[str] = []
+    # Сначала собираем всю сетку с битовыми масками, чтобы потом зачистить шум
+    # по соседям.
+    bit_rows: List[List[int]] = []
     fg_rows: List[List[int]] = []
     bg_rows: List[List[int]] = []
 
     for cy in range(char_h):
-        char_line = []
         fg_line: List[int] = []
         bg_line: List[int] = []
+        bit_line: List[int] = []
         for cx in range(char_w):
             block: List[List[Color]] = []
             for py in range(4):
@@ -273,13 +289,46 @@ def to_braille_grid(
                     r, g, b, a = pixels[cx * 2 + px, cy * 4 + py]
                     row.append(_composite_on_black((r, g, b, a)))
                 block.append(row)
-            char, fg, bg = _block_to_braille(block, dither, min_contrast, min_dots)
-            char_line.append(char)
+            bits, fg, bg, _ = _block_to_braille(block, dither, min_contrast, min_dots)
+            bit_line.append(bits)
             fg_line.append(fg)
             bg_line.append(bg)
-        chars.append("".join(char_line))
+        bit_rows.append(bit_line)
         fg_rows.append(fg_line)
         bg_rows.append(bg_line)
+
+    # Второй проход: убираем одиночные ячейки, если вокруг слишком мало «чернил».
+    cleaned_bits: List[List[int]] = []
+    for y in range(char_h):
+        cleaned_line: List[int] = []
+        for x in range(char_w):
+            bits = bit_rows[y][x]
+            if bits == 0:
+                cleaned_line.append(0)
+                continue
+
+            neighbor_dots = 0
+            for ny in range(max(0, y - 1), min(char_h, y + 2)):
+                for nx in range(max(0, x - 1), min(char_w, x + 2)):
+                    if ny == y and nx == x:
+                        continue
+                    if bit_rows[ny][nx] != 0:
+                        neighbor_dots += 1
+            if neighbor_dots < min_neighbors:
+                cleaned_line.append(0)
+                fg_rows[y][x] = bg_rows[y][x]  # превращаем в заливку
+            else:
+                cleaned_line.append(bits)
+        cleaned_bits.append(cleaned_line)
+
+    # Переводим в строки символов.
+    chars: List[str] = []
+    for y in range(char_h):
+        line_chars: List[str] = []
+        for x in range(char_w):
+            bits = cleaned_bits[y][x]
+            line_chars.append(chr(0x2800 + bits))
+        chars.append("".join(line_chars))
 
     return BrailleFrame(chars=chars, fg_rows=fg_rows, bg_rows=bg_rows)
 
@@ -288,15 +337,15 @@ def frame_to_lua(frame: BrailleFrame) -> str:
     def lua_table(rows: List[List[int]]) -> str:
         parts = []
         for row in rows:
-            # Use decimal literals for maximum compatibility with the OpenOS Lua
-            # interpreter (some builds reject hexadecimal numeric syntax).
+            # Десятичные литералы — для совместимости со старыми билдами OpenOS,
+            # где шестнадцатеричные числа могли ломаться.
             nums = ", ".join(str(value) for value in row)
             parts.append(f"    {{{nums}}}")
         return "{\n" + ",\n".join(parts) + "\n}"
 
     def lua_string_literal(text: str) -> str:
-        # Lua does not understand JSON's \u escapes, so emit UTF-8 directly and
-        # escape only the characters Lua string literals require.
+        # Lua не понимает JSON-экранирование \u, поэтому пишем сразу UTF-8 и
+        # экранируем только спецсимволы Lua-строки.
         escaped = text.replace("\\", "\\\\").replace("\"", "\\\"")
         return f'"{escaped}"'
 
@@ -318,7 +367,7 @@ def frame_to_lua(frame: BrailleFrame) -> str:
 def main() -> None:
     opts = parse_args()
     if opts.char_width <= 0 or opts.char_height <= 0:
-        raise SystemExit("Character width/height must be positive")
+        raise SystemExit("Ширина и высота в символах должны быть больше нуля")
 
     img = load_image(opts.input_path)
     target_px_w = opts.char_width * 2
@@ -331,9 +380,12 @@ def main() -> None:
         opts.dither,
         opts.min_contrast,
         opts.min_dots,
+        opts.min_neighbors,
     )
     opts.output_path.write_text(frame_to_lua(frame), encoding="utf-8")
-    print(f"Saved Braille Lua to {opts.output_path} (chars: {opts.char_width}x{opts.char_height})")
+    print(
+        f"Сохранено в {opts.output_path} (символы: {opts.char_width}x{opts.char_height})"
+    )
 
 
 if __name__ == "__main__":
